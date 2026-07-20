@@ -20,7 +20,7 @@ top_dir=${my_path%/*}
 my_real_name=${my_path##*/}
 
 script_name="Uptime Kuma Down Watcher"
-script_version="1.0.0"
+script_version="1.1.0"
 installed_path="/opt/uptime-kuma-down-watcher"
 installed_script_path="${installed_path}/uptime-kuma-down-watcher.sh"
 installed_conf_path="${installed_path}/uptime-kuma-down-watcher.conf"
@@ -47,18 +47,33 @@ is_installed() {
   fi
 }
 
+#see note 1
 gotify_send_message() {
-  #see note 1
-  curl -X 'POST' \
-  "$gotify_url/message" \
-  -H 'accept: application/json' \
-  -H "X-Gotify-Key: $gotify_app_token" \
-  -H 'Content-Type: application/json' \
-  -d "{
-        \"message\": \"$2\",
-        \"title\": \"$1                                           \",
-        \"priority\": $3
-      }"
+  local title="$1"
+  local message=$(printf '%s' "$2" | sed ':a;N;$!ba;s/\n/\\n/g')
+  local priority="$3"
+
+  echo "Gotify send message
+    url : $gotify_url
+    app_token : $gotify_app_token
+    title: $title
+    message: $message
+    priority: $priority"
+
+
+  gotify_response=$(curl -X 'POST' \
+    "$gotify_url/message" \
+    -H 'accept: application/json' \
+    -H "X-Gotify-Key: $gotify_app_token" \
+    -H 'Content-Type: application/json' \
+    -d "{
+          \"title\": \"$1                                           \",
+          \"message\": \"$message\",
+          \"priority\": $3
+        }")
+  echo "Gotify send message RESPONSE:"
+  echo "$gotify_response"
+
 }
 
 gotify_is_setup() {
@@ -155,57 +170,80 @@ if [ "$uptime_kuma_url" = "" ]; then
   exit 1
 fi
 
-metrics=$(curl -u":$uptime_kuma_api_key" "$uptime_kuma_url/metrics" 2> /dev/null)
-down_monitor_count_tmp=$(grep -E -c "^monitor_status.*0$" <<< "$metrics" || true)
-
-if [ "$down_monitor_count_tmp" -gt 0 ]; then
-  down_monitor_count="$down_monitor_count_tmp";
-else 
-  down_monitor_count="0";
-fi
 
 if [ "$1" = "test-notifications" ]; then 
   test_notification_title="Test notification $hostname $script_name $script_version"
+  test_notification_message="Test(uptime-kuma) : Test notification uptime-kuma down watcher !"
 	if [ -n "$mail" ]; then 
 	  #send mail
     echo "Send test notification mail to $mail"
-    printf "%s" "ERROR(uptime-kuma) : $down_monitor_count server(s) down !"  | \
+    printf "%s" "$test_notification_message" | \
       mail -s "$test_notification_title" "$mail" 
   fi
 
+
   if gotify_is_setup; then
-    echo "Send test notification to Gotify 
-    url : $gotify_url
-    app_token : $gotify_app_token"
-    gotify_notification_message="ERROR(uptime-kuma) : $down_monitor_count server(s) down !"
-    gotify_response=$(gotify_send_message "$test_notification_title" "$gotify_notification_message" "$gotify_priority" 2>&1)
+    echo "Send test notification to Gotify "
+    gotify_response=$(gotify_send_message "$test_notification_title" "$test_notification_message" "$gotify_priority" 2>&1)
     echo "$gotify_response"
   fi
   exit 0
 fi
 
+metrics=$(curl -u":$uptime_kuma_api_key" "$uptime_kuma_url/metrics" 2> /dev/null)
+
+### cert warning 
+
+cert_warning_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_cert_days_remaining.*$" | awk '($NF < 28){ print $0; }'| grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') 
+cert_warning_monitor_count=$(wc -l <<< "$cert_warning_monitor_list")
+
+if [ "$cert_warning_monitor_count" = "0" ]; then
+  #no down monitor, exit the script
+  echo "No cert warning monitor !"
+else
+  echo "$cert_warning_monitor_count cert warning monitor(s) !"
+  uptime_kuma_cert_warning_monitors_notification_title="ERROR(uptime-kuma): $cert_warning_monitor_count  cert warning monitor(s)"
+  uptime_kuma_cert_warning_notification_message="$cert_warning_monitor_list"
+  if [ -n "$mail" ]; then 
+    #send mail
+    echo "Send cert warning email to $mail"
+    printf "%s" "$uptime_kuma_cert_warning_notification_message" | mail -s "$uptime_kuma_cert_warning_monitors_notification_title" "$mail" 
+  fi
+  
+  if gotify_is_setup; then
+    #send gotify notification
+    echo "Send cert warning gotify notification"
+    gotify_send_message \
+      "$uptime_kuma_cert_warning_monitors_notification_title" \
+      "$uptime_kuma_cert_warning_notification_message" \
+      "$gotify_priority" 2>&1
+  fi
+fi
+
+### down monitors
+down_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_status.*0$" | grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') 
+down_monitor_count=$(wc -l <<< "$down_monitor_list")
+
 if [ "$down_monitor_count" = "0" ]; then
   #no down monitor, exit the script
   echo "No down monitor !"
-  exit 0
-fi
-echo "$down_monitor_count down monitor(s) !"
-uptime_kuma_down_monitors_notification_title="ERROR(uptime-kuma): $down_monitor_count down monitor(s)"
-uptime_kuma_down_monitors_notification_message="ERROR(uptime-kuma): $down_monitor_count down monitor(s)"
-if [ -n "$mail" ]; then 
-  #send mail
-  echo "Send services failed email to $mail"
-  printf "%s" "$uptime_kuma_down_monitors_notification_message" | mail -s "$uptime_kuma_down_monitors_notification_title" "$mail" 
+else
+  echo "$down_monitor_count down monitor(s) !"
+  uptime_kuma_down_monitors_notification_title="ERROR(uptime-kuma): $down_monitor_count down monitor(s)"
+  uptime_kuma_down_monitors_notification_message="$down_monitor_list"
+  if [ -n "$mail" ]; then 
+    #send mail
+    echo "Send down monitors gotify notification"
+    printf "%s" "$uptime_kuma_down_monitors_notification_message" | mail -s "$uptime_kuma_down_monitors_notification_title" "$mail" 
+  fi
+  
+  if gotify_is_setup; then
+    #send gotify notification
+    echo "Send down monitors gotify notification"
+    gotify_send_message \
+      "$uptime_kuma_down_monitors_notification_title" \
+      "$uptime_kuma_down_monitors_notification_message" \
+      "$gotify_priority" 2>&1
+  fi
 fi
 
-if gotify_is_setup; then
-  #send gotify notification
-  echo "Send services failed gotify notification
-  url : $gotify_url
-  app_token : $gotify_app_token"
-  gotify_response=$(gotify_send_message \
-    "$uptime_kuma_down_monitors_notification_title" \
-    "$uptime_kuma_down_monitors_notification_message" \
-    "$gotify_priority" 2>&1)
-  echo "$gotify_response"
-fi
