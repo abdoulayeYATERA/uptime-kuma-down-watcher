@@ -190,12 +190,39 @@ if [ "$1" = "test-notifications" ]; then
   exit 0
 fi
 
-metrics=$(curl -u":$uptime_kuma_api_key" "$uptime_kuma_url/metrics" 2> /dev/null)
+if ! metrics=$(curl -f -u":$uptime_kuma_api_key" "${uptime_kuma_url}/metrics" 2> /dev/null); then
+  echo "Error(uptimekuma): error getting metrics at ${uptime_kuma_url}/metrics"
+  echo "Sending error notification (if set up)"
+  error_metrics_request_title="Error(uptimekuma)"
+  error_metrics_request_message="error getting metrics at ${uptime_kuma_url}/metrics"
+
+  if gotify_is_setup; then
+    echo "Sending gotify notification"
+    gotify_response=$(gotify_send_message \
+      "$error_metrics_request_title" \
+      "$error_metrics_request_message" \
+      "$gotify_priority" 2>&1)
+    echo "$gotify_response"
+  fi
+
+	if [ -n "$mail" ]; then 
+    echo "Sending gotify notification"
+    echo "Send test notification mail to $mail"
+    printf "%s" "$error_metrics_request_message" | \
+      mail -s "$error_metrics_request_title" "$mail" 
+  fi
+  exit 0
+fi
 
 ### cert warning 
 
-cert_warning_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_cert_days_remaining.*$" | awk '($NF < 28){ print $0; }'| grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') 
-cert_warning_monitor_count=$(wc -l <<< "$cert_warning_monitor_list")
+cert_warning_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_cert_days_remaining.*$" | awk '($NF < 28){ print $0; }'| grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') || cert_warning_monitor_list=""
+
+if [ "$cert_warning_monitor_list" = "" ]; then 
+  cert_warning_monitor_count="0"
+else 
+  cert_warning_monitor_count=$(<<< "$cert_warning_monitor_list" wc -l)
+fi
 
 if [ "$cert_warning_monitor_count" = "0" ]; then
   #no down monitor, exit the script
@@ -221,8 +248,13 @@ else
 fi
 
 ### down monitors
-down_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_status.*0$" | grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') 
-down_monitor_count=$(wc -l <<< "$down_monitor_list")
+down_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_status.*0$" | grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') || down_monitor_list=""
+
+if [ "$down_monitor_list" = "" ]; then 
+  down_monitor_count="0"
+else 
+  down_monitor_count=$(<<< "$down_monitor_list" wc -l)
+fi
 
 if [ "$down_monitor_count" = "0" ]; then
   #no down monitor, exit the script
@@ -246,4 +278,3 @@ else
       "$gotify_priority" 2>&1
   fi
 fi
-
