@@ -216,7 +216,7 @@ fi
 
 ### cert warning 
 
-cert_warning_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_cert_days_remaining.*$" | awk '($NF < 28){ print $0; }'| grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') || cert_warning_monitor_list=""
+cert_warning_monitor_list=$(printf "%s" "$metrics" | grep -E "^monitor_cert_days_remaining.*$" | awk '($NF < 15){ print $0; }'| grep -Eo 'monitor_name="[^"]*' | sed 's/monitor_name="//') || cert_warning_monitor_list=""
 
 if [ "$cert_warning_monitor_list" = "" ]; then 
   cert_warning_monitor_count="0"
